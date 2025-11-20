@@ -63,89 +63,115 @@ def is_ipv4(host):
 def is_domain(host):
     return not is_ipv4(host) and not is_ipv6(host)
 
-def resolve_domain_to_ip_doh(host, retries=3):
+def resolve_domain_to_ips_doh(host, retries=3):
     doh_servers = [
         'https://1.1.1.1/dns-query',
         'https://8.8.8.8/resolve',
         'https://dns.google/resolve'
     ]
     
-    for attempt in range(retries):
-        for doh_url in doh_servers:
-            try:
-                if 'dns-query' in doh_url:
-                    import struct
-                    query_id = 0x1234
-                    flags = 0x0100
-                    questions = 1
-                    answer_rrs = 0
-                    authority_rrs = 0
-                    additional_rrs = 0
-                    
-                    header = struct.pack('!HHHHHH', query_id, flags, questions, answer_rrs, authority_rrs, additional_rrs)
-                    
-                    qname = b''
-                    for part in host.split('.'):
-                        qname += bytes([len(part)]) + part.encode()
-                    qname += b'\x00'
-                    
-                    qtype_a = 1
-                    qclass_in = 1
-                    question = qname + struct.pack('!HH', qtype_a, qclass_in)
-                    
-                    dns_query = header + question
-                    
-                    req = urllib.request.Request(
-                        doh_url,
-                        data=dns_query,
-                        headers={
-                            'Content-Type': 'application/dns-message',
-                            'Accept': 'application/dns-message'
-                        }
-                    )
-                    
-                    with urllib.request.urlopen(req, timeout=5) as response:
-                        dns_response = response.read()
-                        
-                        offset = 12 + len(question)
-                        
-                        while offset < len(dns_response):
-                            if dns_response[offset] & 0xC0 == 0xC0:
-                                offset += 2
-                            else:
-                                while offset < len(dns_response) and dns_response[offset] != 0:
-                                    offset += dns_response[offset] + 1
-                                offset += 1
-                            
-                            if offset + 10 > len(dns_response):
-                                break
-                            
-                            rtype, rclass, ttl, rdlength = struct.unpack('!HHIH', dns_response[offset:offset+10])
-                            offset += 10
-                            
-                            if rtype == 1 and rdlength == 4:
-                                ip = '.'.join(str(b) for b in dns_response[offset:offset+4])
-                                return ip
-                            
-                            offset += rdlength
-                else:
-                    url = f"{doh_url}?name={host}&type=A"
-                    req = urllib.request.Request(url, headers={'Accept': 'application/dns-json'})
-                    
-                    with urllib.request.urlopen(req, timeout=5) as response:
-                        data = json.loads(response.read().decode('utf-8'))
-                        
-                        if 'Answer' in data:
-                            for answer in data['Answer']:
-                                if answer.get('type') == 1:
-                                    return answer.get('data')
-            except Exception as e:
-                continue
-        
-        if attempt < retries - 1:
-            time.sleep(1)
+    ipv4 = None
+    ipv6 = None
     
-    return None
+    for qtype, qtype_name, qtype_num in [('AAAA', 'ipv6', 28), ('A', 'ipv4', 1)]:
+        for attempt in range(retries):
+            for doh_url in doh_servers:
+                try:
+                    if 'dns-query' in doh_url:
+                        import struct
+                        query_id = 0x1234
+                        flags = 0x0100
+                        questions = 1
+                        answer_rrs = 0
+                        authority_rrs = 0
+                        additional_rrs = 0
+                        
+                        header = struct.pack('!HHHHHH', query_id, flags, questions, answer_rrs, authority_rrs, additional_rrs)
+                        
+                        qname = b''
+                        for part in host.split('.'):
+                            qname += bytes([len(part)]) + part.encode()
+                        qname += b'\x00'
+                        
+                        qclass_in = 1
+                        question = qname + struct.pack('!HH', qtype_num, qclass_in)
+                        
+                        dns_query = header + question
+                        
+                        req = urllib.request.Request(
+                            doh_url,
+                            data=dns_query,
+                            headers={
+                                'Content-Type': 'application/dns-message',
+                                'Accept': 'application/dns-message'
+                            }
+                        )
+                        
+                        with urllib.request.urlopen(req, timeout=5) as response:
+                            dns_response = response.read()
+                            
+                            offset = 12 + len(question)
+                            
+                            while offset < len(dns_response):
+                                if dns_response[offset] & 0xC0 == 0xC0:
+                                    offset += 2
+                                else:
+                                    while offset < len(dns_response) and dns_response[offset] != 0:
+                                        offset += dns_response[offset] + 1
+                                    offset += 1
+                                
+                                if offset + 10 > len(dns_response):
+                                    break
+                                
+                                rtype, rclass, ttl, rdlength = struct.unpack('!HHIH', dns_response[offset:offset+10])
+                                offset += 10
+                                
+                                if rtype == 1 and rdlength == 4:
+                                    ip = '.'.join(str(b) for b in dns_response[offset:offset+4])
+                                    if qtype_name == 'ipv4':
+                                        ipv4 = ip
+                                    return ipv4, ipv6
+                                elif rtype == 28 and rdlength == 16:
+                                    ip_bytes = dns_response[offset:offset+16]
+                                    ip = ':'.join(f'{ip_bytes[i]:02x}{ip_bytes[i+1]:02x}' for i in range(0, 16, 2))
+                                    if qtype_name == 'ipv6':
+                                        ipv6 = ip
+                                    return ipv4, ipv6
+                                
+                                offset += rdlength
+                    else:
+                        url = f"{doh_url}?name={host}&type={qtype}"
+                        req = urllib.request.Request(url, headers={'Accept': 'application/dns-json'})
+                        
+                        with urllib.request.urlopen(req, timeout=5) as response:
+                            data = json.loads(response.read().decode('utf-8'))
+                            
+                            if 'Answer' in data:
+                                for answer in data['Answer']:
+                                    if answer.get('type') == qtype_num:
+                                        ip = answer.get('data')
+                                        if qtype_name == 'ipv4':
+                                            ipv4 = ip
+                                        else:
+                                            ipv6 = ip
+                                        break
+                            
+                            if (qtype_name == 'ipv4' and ipv4) or (qtype_name == 'ipv6' and ipv6):
+                                break
+                
+                except Exception as e:
+                    continue
+                
+                if (qtype_name == 'ipv4' and ipv4) or (qtype_name == 'ipv6' and ipv6):
+                    break
+            
+            if (qtype_name == 'ipv4' and ipv4) or (qtype_name == 'ipv6' and ipv6):
+                break
+            
+            if attempt < retries - 1:
+                time.sleep(1)
+    
+    return ipv4, ipv6
 
 def query_ip_info(ip, retries=3):
     if not ip:
@@ -181,9 +207,11 @@ def get_country_emoji(country_code):
     except:
         return '🌐'
 
-def generate_node_label(ip_info, ip):
+def generate_node_label(ipv4_info, ipv6_info, is_broadcast):
+    ip_info = ipv6_info if ipv6_info else ipv4_info
+    
     if not ip_info:
-        return f"🌐|Unknown-{ip}"
+        return f"🌐|Unknown"
     
     parts = []
     
@@ -209,16 +237,12 @@ def generate_node_label(ip_info, ip):
     if ip_type:
         parts.append(ip_type)
     
-    registered_country = ip_info.get('registered_country', {}).get('code', '')
-    country_code_check = ip_info.get('country', {}).get('code', '')
+    if is_broadcast:
+        parts.append('广播IP')
+    else:
+        parts.append('原生IP')
     
-    if registered_country and country_code_check:
-        if registered_country == country_code_check:
-            parts.append('原生IP')
-        else:
-            parts.append('广播IP')
-    
-    label = '|'.join(parts) if parts else f"🌐|Unknown-{ip}"
+    label = '|'.join(parts) if parts else f"🌐|Unknown"
     return label
 
 def parse_node_address(node_url):
@@ -347,27 +371,55 @@ def check_node(node_url):
     if not is_alive:
         return None, f"✗ {host}:{port} - 连接超时"
     
-    query_ip = None
     original_host = host
+    ipv4 = None
+    ipv6 = None
     
     if is_domain(host):
-        resolved_ip = resolve_domain_to_ip_doh(host)
-        if resolved_ip:
-            query_ip = resolved_ip
-        else:
+        ipv4, ipv6 = resolve_domain_to_ips_doh(host)
+        if not ipv4 and not ipv6:
             return None, f"✗ {host}:{port} - 域名解析失败"
     else:
-        query_ip = host.strip('[]')
+        if is_ipv4(host):
+            ipv4 = host
+        elif is_ipv6(host):
+            ipv6 = host.strip('[]')
     
-    ip_info = query_ip_info(query_ip)
+    ipv4_info = None
+    ipv6_info = None
     
-    new_label = generate_node_label(ip_info, query_ip)
+    if ipv6:
+        ipv6_info = query_ip_info(ipv6)
+    
+    if ipv4:
+        ipv4_info = query_ip_info(ipv4)
+    
+    is_broadcast = False
+    
+    if ipv4_info and ipv6_info:
+        ipv4_country = ipv4_info.get('country', {}).get('code', '')
+        ipv6_country = ipv6_info.get('country', {}).get('code', '')
+        
+        if ipv4_country != ipv6_country:
+            is_broadcast = True
+    
+    if not is_broadcast:
+        check_info = ipv6_info if ipv6_info else ipv4_info
+        if check_info:
+            registered_country = check_info.get('registered_country', {}).get('code', '')
+            country_code = check_info.get('country', {}).get('code', '')
+            
+            if registered_country and country_code and registered_country != country_code:
+                is_broadcast = True
+    
+    new_label = generate_node_label(ipv4_info, ipv6_info, is_broadcast)
     
     updated_node = update_node_label(node_url, new_label)
     
     if not is_domain(original_host):
         updated_node = normalize_ipv6_in_url(updated_node, original_host, port)
     
+    query_ip_display = ipv6 if ipv6 else ipv4
     status = f"✓ {original_host}:{port} -> {new_label}"
     
     return updated_node, status
