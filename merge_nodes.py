@@ -429,7 +429,7 @@ def extract_nodes_from_file(file_path):
     
     try:
         file_name_lower = file_path.name.lower()
-        if 'clash' in file_name_lower or file_path.suffix in ['.yaml', '.yml']:
+        if 'clash' in file_name_lower:
             return nodes
         
         with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
