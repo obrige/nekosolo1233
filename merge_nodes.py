@@ -181,7 +181,7 @@ def query_ip_info(ip, retries=3):
     
     for attempt in range(retries):
         try:
-            url = f"https://ipgeo-api.hf.space/{ip}"
+            url = f"https://hugo-jiang-ip-api.hf.space/{ip}"
             req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
             
             with urllib.request.urlopen(req, timeout=10) as response:
